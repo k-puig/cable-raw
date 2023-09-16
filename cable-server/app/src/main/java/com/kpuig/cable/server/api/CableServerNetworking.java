@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.security.InvalidKeyException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -12,6 +13,10 @@ import java.util.LinkedList;
 import java.util.List;
 
 import javax.annotation.Nonnull;
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.NoSuchPaddingException;
 
 public class CableServerNetworking {
     /*
@@ -23,9 +28,11 @@ public class CableServerNetworking {
         private CableServerRequestQueue requestQueue;
         private List<ClientProcessThread> clientProcesses;
         private ServerSocket serverSocket;
+        private KeyPair serverKeys;
 
-        public ClientAcceptThread(ServerSocket serverSocket, CableServerRequestQueue requestQueue) {
+        public ClientAcceptThread(ServerSocket serverSocket, KeyPair serverKeys, CableServerRequestQueue requestQueue) {
             this.serverSocket = serverSocket;
+            this.serverKeys = serverKeys;
             this.clientProcesses = new LinkedList<>();
             this.requestQueue = requestQueue;
         }
@@ -46,7 +53,14 @@ public class CableServerNetworking {
                     return;
                 }
 
-                ClientProcessThread processThread = new ClientProcessThread(clientSocket);
+                ClientProcessThread processThread;
+                try {
+                    processThread = new ClientProcessThread(clientSocket, serverKeys);
+                } catch (InvalidKeyException | NoSuchAlgorithmException | NoSuchPaddingException e) {
+                    e.printStackTrace();
+                    System.err.println("Error when setting up encryption with the client");
+                    return;
+                }
                 clientProcesses.add(processThread);
                 processThread.start();
             }
@@ -59,25 +73,96 @@ public class CableServerNetworking {
     private class ClientProcessThread extends Thread {
         private CableClient client;
         private Socket clientSocket;
+        private KeyPair serverKeys;
+        private Cipher rsaCipherEncrypt;
+        private Cipher rsaCipherDecrypt;
 
-        public ClientProcessThread(Socket clientSocket) {
+        public ClientProcessThread(Socket clientSocket, KeyPair serverKeys) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException {
             this.clientSocket = clientSocket;
+            this.serverKeys = serverKeys;
+            this.rsaCipherEncrypt = Cipher.getInstance(assymetricKeyAlgo);
+            this.rsaCipherDecrypt = Cipher.getInstance(assymetricKeyAlgo);
+            rsaCipherEncrypt.init(Cipher.ENCRYPT_MODE, serverKeys.getPublic());
+            rsaCipherEncrypt.init(Cipher.DECRYPT_MODE, serverKeys.getPrivate());
         }
 
         @Override
         public void run() {
             /* Handshake */
             // Send pubkey to client
-
+            byte[] serverPubKey = serverKeys.getPublic().getEncoded();
+            try {
+                clientSocket.getOutputStream().write(serverPubKey);
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Failed to send server pubkey to client");
+                return;
+            }
 
             // Await client pubkey
+            byte[] clientPubKey;
+            try {
+                clientPubKey = clientSocket.getInputStream().readAllBytes();
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Failed to receive client pubkey");
+                return;
+            }
 
             // Generate random bytes and encrypt with client key, then send to client
+            SecureRandom messageMaker = new SecureRandom();
+            byte[] message = new byte[32];
+            messageMaker.nextBytes(message);
+            byte[] encryptedMessage;
+            try {
+                encryptedMessage = rsaCipherEncrypt.doFinal(message);
+            } catch (IllegalBlockSizeException | BadPaddingException e) {
+                e.printStackTrace();
+                System.err.println("Error with encrypting the test message for client connection");
+                return;
+            }
 
+            try {
+                clientSocket.getOutputStream().write(encryptedMessage);
+            } catch (IOException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                System.err.println("Error sending encrypted message to client");
+                return;
+            }
+            
             // Await server-pubkey-encrypted message
+            byte[] clientEncryptedMessage;
+            try {
+                clientEncryptedMessage = clientSocket.getInputStream().readAllBytes();
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Error receiving client encrypted message");
+                return;
+            }
 
             // Decrypt message and compare with original message, continue if matched
+            byte[] clientDecryptedMessage;
 
+            try {
+                clientDecryptedMessage = rsaCipherDecrypt.doFinal(clientEncryptedMessage);
+            } catch (IllegalBlockSizeException | BadPaddingException e) {
+                e.printStackTrace();
+                System.err.println("Error decrypting the client's message");
+                return;
+            }
+
+            
+            if (message.length != clientDecryptedMessage.length) {
+                System.err.println("Message length mismatch. Handshake with client failed.");
+                return;
+            }
+            for (int i = 0; i < message.length; i++) {
+                if (message[i] != clientDecryptedMessage[i]) {
+                    System.err.println("Mismatch at index " + i + " for message equivalence check");
+                    return;
+                }
+            }
             
             // Continual process
             while (true) {
