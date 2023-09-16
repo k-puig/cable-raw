@@ -1,14 +1,13 @@
 package com.kpuig.cable.client.api;
 
 import java.io.IOException;
-import java.net.Socket;
 import java.net.UnknownHostException;
 
 public class CableClient {
-    Socket serverSocket;
+    CableClientNetworking clientNetworking;
 
     public CableClient(String domain, int port) throws UnknownHostException, IOException {
-        this.serverSocket = new Socket(domain, port);
+        this.clientNetworking = new CableClientNetworking(domain, port);
     }
 
     public void start() {

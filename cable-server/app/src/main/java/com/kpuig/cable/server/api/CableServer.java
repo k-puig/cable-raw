@@ -14,6 +14,6 @@ public class CableServer {
 
     // Initialize server socket thread and request processing thread
     public void start() {
-        
+        networking.start(requestQueue);
     }
 }

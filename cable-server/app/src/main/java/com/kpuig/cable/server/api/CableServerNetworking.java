@@ -5,10 +5,14 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.security.InvalidKeyException;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -77,6 +81,8 @@ public class CableServerNetworking {
         private Cipher rsaCipherEncrypt;
         private Cipher rsaCipherDecrypt;
 
+        private PublicKey clientPubKey;
+
         public ClientProcessThread(Socket clientSocket, KeyPair serverKeys) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException {
             this.clientSocket = clientSocket;
             this.serverKeys = serverKeys;
@@ -107,6 +113,15 @@ public class CableServerNetworking {
                 e.printStackTrace();
                 System.err.println("Failed to receive client pubkey");
                 return;
+            }
+            
+            try {
+                KeyFactory keyFactory = KeyFactory.getInstance(assymetricKeyAlgo);
+                X509EncodedKeySpec keySpec = new X509EncodedKeySpec(clientPubKey);
+                this.clientPubKey = keyFactory.generatePublic(keySpec);
+            } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
+                e.printStackTrace();
+                System.err.println("Error converting encoded client pubkey");
             }
 
             // Generate random bytes and encrypt with client key, then send to client
@@ -192,6 +207,11 @@ public class CableServerNetworking {
         KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(assymetricKeyAlgo);
         keyPairGenerator.initialize(2048, random);
         encryptionKeyPair = keyPairGenerator.generateKeyPair();
+    }
+
+    public void start(CableServerRequestQueue requestQueue) {
+
+        ClientAcceptThread acceptThread = new ClientAcceptThread(serverSocket, encryptionKeyPair, requestQueue);
     }
 
     // Guarantee: all requests will be valid and secure
