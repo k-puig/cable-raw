@@ -5,6 +5,7 @@ package com.kpuig.cable.client;
 
 import java.io.IOException;
 import java.net.UnknownHostException;
+import java.security.NoSuchAlgorithmException;
 
 import com.kpuig.cable.client.api.CableClient;
 
@@ -19,7 +20,7 @@ public class App {
         client.start();
     }
 
-    public static void main(String[] args) throws UnknownHostException, IOException {
+    public static void main(String[] args) throws UnknownHostException, IOException, NoSuchAlgorithmException {
         CableClient client = new CableClient("localhost", 5687);
         App app = new App(client);
         app.start();

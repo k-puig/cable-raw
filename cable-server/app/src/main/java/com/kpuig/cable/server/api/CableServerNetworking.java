@@ -28,7 +28,8 @@ public class CableServerNetworking {
      */
 
     // This class only exists to accept clients
-    private class ClientAcceptThread extends Thread {
+    // Only one thread will be instantiated
+    private class ClientAcceptThread implements Runnable {
         private CableServerRequestQueue requestQueue;
         private List<ClientProcessThread> clientProcesses;
         private ServerSocket serverSocket;
@@ -65,8 +66,10 @@ public class CableServerNetworking {
                     System.err.println("Error when setting up encryption with the client");
                     return;
                 }
+
                 clientProcesses.add(processThread);
-                processThread.start();
+                Thread clientThread = new Thread(processThread);
+                clientThread.start();
             }
         }
     }
@@ -74,7 +77,7 @@ public class CableServerNetworking {
     // This class will be created per client
     // Each thread will have an initial handshake process
     // Upon a successful handshake, it will continually add requests to the queue
-    private class ClientProcessThread extends Thread {
+    private class ClientProcessThread implements Runnable {
         private CableClient client;
         private Socket clientSocket;
         private KeyPair serverKeys;
@@ -82,6 +85,7 @@ public class CableServerNetworking {
         private Cipher rsaCipherDecrypt;
 
         private PublicKey clientPubKey;
+        private Cipher rsaClientEncrypt;
 
         public ClientProcessThread(Socket clientSocket, KeyPair serverKeys) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException {
             this.clientSocket = clientSocket;
@@ -124,13 +128,22 @@ public class CableServerNetworking {
                 System.err.println("Error converting encoded client pubkey");
             }
 
+            // Create client pubkey cipher
+            try {
+                this.rsaClientEncrypt = Cipher.getInstance(assymetricKeyAlgo);
+                this.rsaClientEncrypt.init(Cipher.ENCRYPT_MODE, this.clientPubKey);
+            } catch (InvalidKeyException | NoSuchAlgorithmException | NoSuchPaddingException e) {
+                e.printStackTrace();
+                System.err.println("Failed to create cipher from given client pubkey");
+            }
+
             // Generate random bytes and encrypt with client key, then send to client
             SecureRandom messageMaker = new SecureRandom();
             byte[] message = new byte[32];
             messageMaker.nextBytes(message);
             byte[] encryptedMessage;
             try {
-                encryptedMessage = rsaCipherEncrypt.doFinal(message);
+                encryptedMessage = rsaClientEncrypt.doFinal(message);
             } catch (IllegalBlockSizeException | BadPaddingException e) {
                 e.printStackTrace();
                 System.err.println("Error with encrypting the test message for client connection");
@@ -178,7 +191,21 @@ public class CableServerNetworking {
                     return;
                 }
             }
+
+            // Signal to client that pubkey exchange was successful
+            byte[] successMessage = "ACCEPTED".getBytes();
+            try {
+                successMessage = rsaClientEncrypt.doFinal(successMessage);
+            } catch (IllegalBlockSizeException | BadPaddingException e) {
+                e.printStackTrace();
+                System.err.println("Against all odds after successful handshake, sending ACCEPTED signal failed");
+                return;
+            }
             
+
+            // Await new or existing user credentials
+            
+
             // Continue getting data from the client
             while (true) {
                 return;
@@ -210,8 +237,9 @@ public class CableServerNetworking {
     }
 
     public void start(CableServerRequestQueue requestQueue) {
-
-        ClientAcceptThread acceptThread = new ClientAcceptThread(serverSocket, encryptionKeyPair, requestQueue);
+        ClientAcceptThread acceptRunnable = new ClientAcceptThread(serverSocket, encryptionKeyPair, requestQueue);
+        Thread acceptThread = new Thread(acceptRunnable);
+        acceptThread.start();
     }
 
     // Guarantee: all requests will be valid and secure
