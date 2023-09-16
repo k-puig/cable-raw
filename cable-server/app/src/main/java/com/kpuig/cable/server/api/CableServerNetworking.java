@@ -179,7 +179,7 @@ public class CableServerNetworking {
                 }
             }
             
-            // Continual process
+            // Continue getting data from the client
             while (true) {
                 return;
             }
