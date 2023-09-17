@@ -3,6 +3,7 @@ package com.kpuig.cable.client.api;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -12,11 +13,14 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
+import java.util.List;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.spec.IvParameterSpec;
 
 // Handles sending data to the server via processing requests
 public class CableClientNetworking {
@@ -48,8 +52,12 @@ public class CableClientNetworking {
     }
 
     public void start() throws IOException, IllegalBlockSizeException, BadPaddingException, InvalidKeySpecException, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException {
+        // Connect
+        this.serverSocket.setSoTimeout(10 * 1000); // 10 seconds
+        
         // Await server pubkey and create cipher
-        byte[] serverPubkeyBytes = serverSocket.getInputStream().readAllBytes();
+        int nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
+        byte[] serverPubkeyBytes = serverSocket.getInputStream().readNBytes(nextNBytes);
         KeyFactory keyFactory = KeyFactory.getInstance(assymetricKeyAlgo);
         X509EncodedKeySpec keySpec = new X509EncodedKeySpec(serverPubkeyBytes);
         
@@ -57,26 +65,89 @@ public class CableClientNetworking {
         this.rsaServerEncrypt = Cipher.getInstance(assymetricKeyAlgo);
         rsaServerEncrypt.init(Cipher.ENCRYPT_MODE, serverPubKey);
         
-
         // Send this pubkey
         byte[] clientPubkeyBytes = encryptionKeyPair.getPublic().getEncoded();
+        serverSocket.getOutputStream().write(intToBytes(clientPubkeyBytes.length));
         serverSocket.getOutputStream().write(clientPubkeyBytes);
 
         // Await server encrypted test message
-        byte[] encryptedMessage = serverSocket.getInputStream().readAllBytes();
+        nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
+        byte[] encryptedMessage = serverSocket.getInputStream().readNBytes(nextNBytes);
 
         // Decrypt and re-encrypt test message, then send back to server
         byte[] decryptedMessage = rsaCipherDecrypt.doFinal(encryptedMessage);
         byte[] serverEncryptedMessage = rsaServerEncrypt.doFinal(decryptedMessage);
+        serverSocket.getOutputStream().write(intToBytes(serverEncryptedMessage.length));
         serverSocket.getOutputStream().write(serverEncryptedMessage);
 
         // Await accept signal
-        byte[] encryptedAcceptSignal = serverSocket.getInputStream().readAllBytes();
+        byte[] encryptedAcceptSignal = serverSocket.getInputStream().readNBytes(nextNBytes);
         byte[] acceptSignal = rsaCipherDecrypt.doFinal(encryptedAcceptSignal);
-        if (!new String(acceptSignal).equals("ACCEPT")) {
-            throw new Error("Incorrect ACCEPT signal received: \"" + new String(acceptSignal) + "\"");
+        if (!new String(acceptSignal).equals("PKACCEPTED")) {
+            throw new Error("Incorrect ACCEPTED signal received: \"" + new String(acceptSignal) + "\"");
         }
+        System.out.println("FUYCK YEAH BABYY WOOOOOO");
+
+        // Await AES key + IV
+        nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
+        byte[] iv = serverSocket.getInputStream().readNBytes(nextNBytes);
+        IvParameterSpec ivParamSpec = new IvParameterSpec(iv);
+
+        // Send back the SHA-256 hash of the AES key + IV
 
         // Send credentials
+    }
+
+    public static int bytesToInt(byte[] bytes) {
+        assert(bytes.length == 4);
+        return ByteBuffer.wrap(bytes).getInt();
+    }
+
+    public static byte[] intToBytes(int i) {
+        byte[] bytes = ByteBuffer.allocate(4).putInt(i).array();
+        return bytes;
+    }
+
+    public static byte[][] splitIntoNSizeChunks(byte[] data, int n) {
+        int chunkCount = data.length / n;
+        if (data.length % n > 0) {
+            chunkCount++;
+        }
+
+        byte[][] splitData = new byte[chunkCount][];
+
+        for (int i = 0; i < chunkCount; i++) {
+            int start = i * n;
+            List<Byte> byteList = new ArrayList<>();
+            for (int j = start; j < Math.min(start + n, data.length); j++) {
+                byteList.add(data[j - start]);
+            }
+            
+            byte[] byteArray = new byte[byteList.size()];
+            int byteI = 0;
+            for (byte b : byteList) {
+                byteArray[byteI++] = b;
+            }
+            splitData[i] = byteArray;
+        }
+
+        return splitData;
+    }
+
+    public static byte[] combine2DByteArr(byte[][] splitData) {
+        int finalSize = 0;
+        for (int i = 0; i < splitData.length; i++) {
+            finalSize += splitData[i].length;
+        }
+
+        byte[] combinedData = new byte[finalSize];
+        int cdIndex = 0;
+        for (byte[] bArr : splitData) {
+            for (byte b : bArr) {
+                combinedData[cdIndex++] = b;
+            }
+        }
+
+        return combinedData;
     }
 }

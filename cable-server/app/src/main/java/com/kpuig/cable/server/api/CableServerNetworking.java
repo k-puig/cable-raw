@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -13,6 +14,7 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -20,7 +22,10 @@ import javax.annotation.Nonnull;
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.KeyGenerator;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
 
 public class CableServerNetworking {
     /*
@@ -87,13 +92,15 @@ public class CableServerNetworking {
         private PublicKey clientPubKey;
         private Cipher rsaClientEncrypt;
 
+        private SecretKey aesEncryptionKey;
+
         public ClientProcessThread(Socket clientSocket, KeyPair serverKeys) throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeyException {
             this.clientSocket = clientSocket;
             this.serverKeys = serverKeys;
-            this.rsaCipherEncrypt = Cipher.getInstance(assymetricKeyAlgo);
-            this.rsaCipherDecrypt = Cipher.getInstance(assymetricKeyAlgo);
+            this.rsaCipherEncrypt = Cipher.getInstance(asymmetricKeyAlgo);
+            this.rsaCipherDecrypt = Cipher.getInstance(asymmetricKeyAlgo);
             rsaCipherEncrypt.init(Cipher.ENCRYPT_MODE, serverKeys.getPublic());
-            rsaCipherEncrypt.init(Cipher.DECRYPT_MODE, serverKeys.getPrivate());
+            rsaCipherDecrypt.init(Cipher.DECRYPT_MODE, serverKeys.getPrivate());
         }
 
         @Override
@@ -102,6 +109,7 @@ public class CableServerNetworking {
             // Send pubkey to client
             byte[] serverPubKey = serverKeys.getPublic().getEncoded();
             try {
+                clientSocket.getOutputStream().write(intToBytes(serverPubKey.length));
                 clientSocket.getOutputStream().write(serverPubKey);
             } catch (IOException e) {
                 e.printStackTrace();
@@ -110,9 +118,11 @@ public class CableServerNetworking {
             }
 
             // Await client pubkey
+            int nextNBytes = 0;
             byte[] clientPubKey;
             try {
-                clientPubKey = clientSocket.getInputStream().readAllBytes();
+                nextNBytes = bytesToInt(clientSocket.getInputStream().readNBytes(4));
+                clientPubKey = clientSocket.getInputStream().readNBytes(nextNBytes);
             } catch (IOException e) {
                 e.printStackTrace();
                 System.err.println("Failed to receive client pubkey");
@@ -120,21 +130,23 @@ public class CableServerNetworking {
             }
             
             try {
-                KeyFactory keyFactory = KeyFactory.getInstance(assymetricKeyAlgo);
+                KeyFactory keyFactory = KeyFactory.getInstance(asymmetricKeyAlgo);
                 X509EncodedKeySpec keySpec = new X509EncodedKeySpec(clientPubKey);
                 this.clientPubKey = keyFactory.generatePublic(keySpec);
             } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
                 e.printStackTrace();
                 System.err.println("Error converting encoded client pubkey");
+                return;
             }
 
             // Create client pubkey cipher
             try {
-                this.rsaClientEncrypt = Cipher.getInstance(assymetricKeyAlgo);
+                this.rsaClientEncrypt = Cipher.getInstance(asymmetricKeyAlgo);
                 this.rsaClientEncrypt.init(Cipher.ENCRYPT_MODE, this.clientPubKey);
             } catch (InvalidKeyException | NoSuchAlgorithmException | NoSuchPaddingException e) {
                 e.printStackTrace();
                 System.err.println("Failed to create cipher from given client pubkey");
+                return;
             }
 
             // Generate random bytes and encrypt with client key, then send to client
@@ -151,9 +163,9 @@ public class CableServerNetworking {
             }
 
             try {
+                clientSocket.getOutputStream().write(intToBytes(encryptedMessage.length));
                 clientSocket.getOutputStream().write(encryptedMessage);
             } catch (IOException e) {
-                // TODO Auto-generated catch block
                 e.printStackTrace();
                 System.err.println("Error sending encrypted message to client");
                 return;
@@ -162,7 +174,8 @@ public class CableServerNetworking {
             // Await server-pubkey-encrypted message
             byte[] clientEncryptedMessage;
             try {
-                clientEncryptedMessage = clientSocket.getInputStream().readAllBytes();
+                nextNBytes = bytesToInt(clientSocket.getInputStream().readNBytes(4));
+                clientEncryptedMessage = clientSocket.getInputStream().readNBytes(nextNBytes);
             } catch (IOException e) {
                 e.printStackTrace();
                 System.err.println("Error receiving client encrypted message");
@@ -193,15 +206,65 @@ public class CableServerNetworking {
             }
 
             // Signal to client that pubkey exchange was successful
-            byte[] successMessage = "ACCEPTED".getBytes();
+            byte[] successMessage = "PKACCEPTED".getBytes();
             try {
                 successMessage = rsaClientEncrypt.doFinal(successMessage);
-            } catch (IllegalBlockSizeException | BadPaddingException e) {
+                clientSocket.getOutputStream().write(intToBytes(successMessage.length));
+                clientSocket.getOutputStream().write(successMessage);
+                System.out.println("FUYCK YEAH BABYY WOOOOOO");
+            } catch (IllegalBlockSizeException | BadPaddingException | IOException e) {
                 e.printStackTrace();
                 System.err.println("Against all odds after successful handshake, sending ACCEPTED signal failed");
                 return;
             }
-            
+
+            // Generate IV and AES
+            KeyGenerator keyGenerator;
+            try {
+                keyGenerator = KeyGenerator.getInstance(symmetricKeyAlgo);
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                System.err.println("Error generating key generator instance for AES");
+                return;
+            }
+            keyGenerator.init(symmetricKeyBits);
+            this.aesEncryptionKey = keyGenerator.generateKey();
+            byte[] aesKeyBytes = aesEncryptionKey.getEncoded();
+
+            SecureRandom secureRandom = new SecureRandom();
+            byte[] iv = new byte[16];
+            secureRandom.nextBytes(iv);
+            IvParameterSpec ivParamSpec = new IvParameterSpec(iv);
+
+            // Send IV and AES key
+            try {
+                clientSocket.getOutputStream().write(intToBytes(iv.length));
+                clientSocket.getOutputStream().write(iv);
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Error sending IV");
+                return;
+            }
+
+            byte[][] splitAesKey = splitIntoNSizeChunks(aesEncryptionKey.getEncoded(), 24);
+            try {
+                for (int i = 0; i < splitAesKey.length; i++) {
+                    splitAesKey[i] = rsaClientEncrypt.doFinal(splitAesKey[i]);
+                }
+            } catch (IllegalBlockSizeException | BadPaddingException e) {
+                e.printStackTrace();
+                System.err.println("Error encrypting the AES key prior to sending");
+            }
+            try {
+                clientSocket.getOutputStream().write(intToBytes(splitAesKey.length));
+                for (byte[] bArr : splitAesKey) {
+                    clientSocket.getOutputStream().write(intToBytes(bArr.length));
+                    clientSocket.getOutputStream().write(bArr);
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Error in sending encoded AES key chunks");
+            }
 
             // Await new or existing user credentials
             
@@ -217,7 +280,11 @@ public class CableServerNetworking {
      * END CLASS DEFINITIONS
      */
 
-    private final String assymetricKeyAlgo = "RSA";
+    private final String asymmetricKeyAlgo = "RSA";
+    private final int asymmetricKeyBits = 2048;
+
+    private final String symmetricKeyAlgo = "AES";
+    private final int symmetricKeyBits = 256;
 
     private KeyPair encryptionKeyPair;
     private ServerSocket serverSocket;
@@ -231,8 +298,8 @@ public class CableServerNetworking {
 
         // Create pubkey/privkey pair
         SecureRandom random = new SecureRandom();
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(assymetricKeyAlgo);
-        keyPairGenerator.initialize(2048, random);
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(asymmetricKeyAlgo);
+        keyPairGenerator.initialize(asymmetricKeyBits, random);
         encryptionKeyPair = keyPairGenerator.generateKeyPair();
     }
 
@@ -250,5 +317,58 @@ public class CableServerNetworking {
         List<CableServerRequest> returned = requests;
         requests = new LinkedList<>();
         return returned;
+    }
+
+    public static int bytesToInt(byte[] bytes) {
+        assert(bytes.length == 4);
+        return ByteBuffer.wrap(bytes).getInt();
+    }
+
+    public static byte[] intToBytes(int i) {
+        byte[] bytes = ByteBuffer.allocate(4).putInt(i).array();
+        return bytes;
+    }
+
+    public static byte[][] splitIntoNSizeChunks(byte[] data, int n) {
+        int chunkCount = data.length / n;
+        if (data.length % n > 0) {
+            chunkCount++;
+        }
+
+        byte[][] splitData = new byte[chunkCount][];
+
+        for (int i = 0; i < chunkCount; i++) {
+            int start = i * n;
+            List<Byte> byteList = new ArrayList<>();
+            for (int j = start; j < Math.min(start + n, data.length); j++) {
+                byteList.add(data[j - start]);
+            }
+            
+            byte[] byteArray = new byte[byteList.size()];
+            int byteI = 0;
+            for (byte b : byteList) {
+                byteArray[byteI++] = b;
+            }
+            splitData[i] = byteArray;
+        }
+
+        return splitData;
+    }
+
+    public static byte[] combine2DByteArr(byte[][] splitData) {
+        int finalSize = 0;
+        for (int i = 0; i < splitData.length; i++) {
+            finalSize += splitData[i].length;
+        }
+
+        byte[] combinedData = new byte[finalSize];
+        int cdIndex = 0;
+        for (byte[] bArr : splitData) {
+            for (byte b : bArr) {
+                combinedData[cdIndex++] = b;
+            }
+        }
+
+        return combinedData;
     }
 }
