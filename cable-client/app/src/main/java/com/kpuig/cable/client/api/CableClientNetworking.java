@@ -8,6 +8,7 @@ import java.security.InvalidKeyException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -25,6 +26,7 @@ import javax.crypto.spec.IvParameterSpec;
 // Handles sending data to the server via processing requests
 public class CableClientNetworking {
     private final String assymetricKeyAlgo = "RSA";
+    private static final String hashAlgo = "SHA-256";
 
     private Socket serverSocket;
     private KeyPair encryptionKeyPair;
@@ -81,19 +83,33 @@ public class CableClientNetworking {
         serverSocket.getOutputStream().write(serverEncryptedMessage);
 
         // Await accept signal
+        nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
         byte[] encryptedAcceptSignal = serverSocket.getInputStream().readNBytes(nextNBytes);
         byte[] acceptSignal = rsaCipherDecrypt.doFinal(encryptedAcceptSignal);
         if (!new String(acceptSignal).equals("PKACCEPTED")) {
             throw new Error("Incorrect ACCEPTED signal received: \"" + new String(acceptSignal) + "\"");
         }
-        System.out.println("FUYCK YEAH BABYY WOOOOOO");
 
         // Await AES key + IV
         nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
         byte[] iv = serverSocket.getInputStream().readNBytes(nextNBytes);
-        IvParameterSpec ivParamSpec = new IvParameterSpec(iv);
+        int splitAesChunkCount = bytesToInt(serverSocket.getInputStream().readNBytes(4));
+        byte[][] splitAesKeyBytes = new byte[splitAesChunkCount][];
+        for (int i = 0; i < splitAesChunkCount; i++) {
+            nextNBytes = bytesToInt(serverSocket.getInputStream().readNBytes(4));
+            byte[] encryptedAesKeyChunk = serverSocket.getInputStream().readNBytes(nextNBytes);
+            byte[] decryptedAesKeyChunk = rsaCipherDecrypt.doFinal(encryptedAesKeyChunk);
+            splitAesKeyBytes[i] = decryptedAesKeyChunk;
+        }
+        byte[] aesKeyBytes = combine2DByteArr(splitAesKeyBytes);
 
         // Send back the SHA-256 hash of the AES key + IV
+        MessageDigest digest = MessageDigest.getInstance(hashAlgo);
+        byte[] hashed = digest.digest(combinedByteArr(iv, aesKeyBytes));
+        serverSocket.getOutputStream().write(intToBytes(hashed.length));
+        serverSocket.getOutputStream().write(hashed);
+
+        System.out.println("FUYCK YEAH BABYY WOOOOOO");
 
         // Send credentials
     }
@@ -149,5 +165,18 @@ public class CableClientNetworking {
         }
 
         return combinedData;
+    }
+
+    public static byte[] combinedByteArr(byte[] left, byte[] right) {
+        byte[] result = new byte[left.length + right.length];
+
+        for (int i = 0; i < left.length; i++) {
+            result[i] = left[i];
+        }
+        for (int j = 0; j < right.length; j++) {
+            result[j + left.length] = right[j];
+        }
+
+        return result;
     }
 }

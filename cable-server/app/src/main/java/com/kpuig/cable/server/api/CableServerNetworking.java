@@ -9,6 +9,7 @@ import java.security.InvalidKeyException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -211,7 +212,6 @@ public class CableServerNetworking {
                 successMessage = rsaClientEncrypt.doFinal(successMessage);
                 clientSocket.getOutputStream().write(intToBytes(successMessage.length));
                 clientSocket.getOutputStream().write(successMessage);
-                System.out.println("FUYCK YEAH BABYY WOOOOOO");
             } catch (IllegalBlockSizeException | BadPaddingException | IOException e) {
                 e.printStackTrace();
                 System.err.println("Against all odds after successful handshake, sending ACCEPTED signal failed");
@@ -255,6 +255,7 @@ public class CableServerNetworking {
                 e.printStackTrace();
                 System.err.println("Error encrypting the AES key prior to sending");
             }
+
             try {
                 clientSocket.getOutputStream().write(intToBytes(splitAesKey.length));
                 for (byte[] bArr : splitAesKey) {
@@ -264,7 +265,44 @@ public class CableServerNetworking {
             } catch (IOException e) {
                 e.printStackTrace();
                 System.err.println("Error in sending encoded AES key chunks");
+                return;
             }
+
+            // Generate hash of IV and AES key
+            byte[] hashed;
+            try {
+                MessageDigest digest = MessageDigest.getInstance(hashAlgo);
+                hashed = digest.digest(combinedByteArr(iv, aesKeyBytes));
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                System.err.println("Error hashing iv and aes key");
+                return;
+            }
+
+            // Await hash of IV and AES key
+            
+            byte[] clientHash;
+            try {
+                nextNBytes = bytesToInt(clientSocket.getInputStream().readNBytes(4));
+                clientHash = clientSocket.getInputStream().readNBytes(nextNBytes);
+            } catch (IOException e) {
+                e.printStackTrace();
+                System.err.println("Error receiving IV and AES hash from client");
+                return;
+            }
+
+            // Compare client hash with server hash
+            if (hashed.length != clientHash.length) {
+                System.err.println("Hash length mismatch. AES+IV exchange with client failed.");
+                return;
+            }
+            for (int i = 0; i < hashed.length; i++) {
+                if (hashed[i] != clientHash[i]) {
+                    System.err.println("Mismatch at index " + i + " for hash equivalence check");
+                    return;
+                }
+            }
+            System.out.println("WEEEEE");
 
             // Await new or existing user credentials
             
@@ -285,6 +323,8 @@ public class CableServerNetworking {
 
     private final String symmetricKeyAlgo = "AES";
     private final int symmetricKeyBits = 256;
+
+    private final String hashAlgo = "SHA-256";
 
     private KeyPair encryptionKeyPair;
     private ServerSocket serverSocket;
@@ -370,5 +410,18 @@ public class CableServerNetworking {
         }
 
         return combinedData;
+    }
+
+    public static byte[] combinedByteArr(byte[] left, byte[] right) {
+        byte[] result = new byte[left.length + right.length];
+
+        for (int i = 0; i < left.length; i++) {
+            result[i] = left[i];
+        }
+        for (int j = 0; j < right.length; j++) {
+            result[j + left.length] = right[j];
+        }
+
+        return result;
     }
 }
