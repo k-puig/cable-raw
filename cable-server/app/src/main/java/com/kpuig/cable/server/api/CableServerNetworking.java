@@ -16,6 +16,7 @@ import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -246,7 +247,7 @@ public class CableServerNetworking {
                 return;
             }
 
-            byte[][] splitAesKey = splitIntoNSizeChunks(aesEncryptionKey.getEncoded(), 24);
+            byte[][] splitAesKey = splitIntoNSizeChunks(aesKeyBytes, 20);
             try {
                 for (int i = 0; i < splitAesKey.length; i++) {
                     splitAesKey[i] = rsaClientEncrypt.doFinal(splitAesKey[i]);
@@ -370,6 +371,16 @@ public class CableServerNetworking {
     }
 
     public static byte[][] splitIntoNSizeChunks(byte[] data, int n) {
+        if (n <= 0) {
+            throw new IllegalArgumentException("Invalid value of 'n' supplied: must be positive");
+        }
+
+        if (n >= data.length) {
+            byte[][] splitData = new byte[1][];
+            splitData[0] = Arrays.copyOf(data, data.length);
+            return splitData;
+        }
+
         int chunkCount = data.length / n;
         if (data.length % n > 0) {
             chunkCount++;
@@ -379,17 +390,7 @@ public class CableServerNetworking {
 
         for (int i = 0; i < chunkCount; i++) {
             int start = i * n;
-            List<Byte> byteList = new ArrayList<>();
-            for (int j = start; j < Math.min(start + n, data.length); j++) {
-                byteList.add(data[j - start]);
-            }
-            
-            byte[] byteArray = new byte[byteList.size()];
-            int byteI = 0;
-            for (byte b : byteList) {
-                byteArray[byteI++] = b;
-            }
-            splitData[i] = byteArray;
+            splitData[i] = Arrays.copyOfRange(data, start, Math.min(start + n, data.length));
         }
 
         return splitData;
