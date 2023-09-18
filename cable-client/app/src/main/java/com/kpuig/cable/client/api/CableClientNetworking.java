@@ -109,10 +109,6 @@ public class CableClientNetworking {
         byte[] hashed = digest.digest(combinedByteArr(iv, aesKeyBytes));
         serverSocket.getOutputStream().write(intToBytes(hashed.length));
         serverSocket.getOutputStream().write(hashed);
-
-        System.out.println("FUYCK YEAH BABYY WOOOOOO");
-
-        // Send credentials
     }
 
     public static int bytesToInt(byte[] bytes) {
